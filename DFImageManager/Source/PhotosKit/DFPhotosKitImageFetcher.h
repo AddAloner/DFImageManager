@@ -40,6 +40,12 @@ extern NSString *const DFPhotosKitDeliveryModeKey;
  */
 extern NSString *const DFPhotosKitResizeModeKey;
 
+/*!
+ Same as PHImageRequestOptionsDeliveryModeHighQualityFormat but returns GIF via DFAnimatedImage if possible.
+ @note Should be put into DFImageRequestOptions userInfo dictionary with DFPhotosKitDeliveryModeKey key.
+ */
+extern NSInteger const DFPhotosKitDeliveryModeHighQualityOrGIF;
+
 /*! Image fetcher for Photos Kit framework. Supported resources: PHAsset, NSURL with scheme com.github.kean.photos-kit.
  @note Use methods of NSURL+DFPhotosKit category to construct URLs for PHAssets.
  */

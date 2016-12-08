@@ -24,28 +24,31 @@
 #import "DFImageRequestOptions.h"
 #import "DFPhotosKitImageFetcher.h"
 #import "NSURL+DFPhotosKit.h"
+#import "UIImage+DFImageUtilities.h"
 #import <Photos/Photos.h>
-
+#import <MobileCoreServices/MobileCoreServices.h>
 
 NS_CLASS_AVAILABLE_IOS(8_0) @interface _DFPhotosKitImageFetchOperation : NSOperation
 
 @property (nonatomic, readonly) UIImage *result;
 @property (nonatomic, readonly) NSDictionary *info;
 
-- (instancetype)initWithResource:(id)resource targetSize:(CGSize)targetSize contentMode:(PHImageContentMode)contentMode options:(PHImageRequestOptions *)options NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithResource:(id)resource targetSize:(CGSize)targetSize contentMode:(PHImageContentMode)contentMode options:(PHImageRequestOptions *)options allowGIF:(BOOL)allowGIF NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
 
 @end
-
 
 
 NSString *const DFPhotosKitVersionKey = @"DFPhotosKitVersionKey";
 NSString *const DFPhotosKitDeliveryModeKey = @"DFPhotosKitDeliveryModeKey";
 NSString *const DFPhotosKitResizeModeKey = @"DFPhotosKitResizeModeKey";
+NSInteger const DFPhotosKitDeliveryModeHighQualityOrGIF = PHImageRequestOptionsDeliveryModeHighQualityFormat + 1;
 
 typedef struct {
     PHImageRequestOptionsVersion version;
     PHImageRequestOptionsDeliveryMode deliveryMode;
     PHImageRequestOptionsResizeMode resizeMode;
+    BOOL allowGIF;
 } _DFPhotosKitRequestOptions;
 
 static inline NSString *_PHAssetLocalIdentifier(id resource) {
@@ -119,7 +122,8 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
     _DFPhotosKitRequestOptions options2 = [self _requestOptionsFromUserInfo:request2.options.userInfo];
     return (options1.version == options2.version &&
             options1.deliveryMode == options2.deliveryMode &&
-            options1.resizeMode == options2.resizeMode);
+            options1.resizeMode == options2.resizeMode &&
+            options1.allowGIF == options2.allowGIF);
 }
 
 - (nonnull NSOperation *)startOperationWithRequest:(nonnull DFImageRequest *)request progressHandler:(nullable DFImageFetchingProgressHandler)progressHandler completion:(nullable DFImageFetchingCompletionHandler)completion {
@@ -147,7 +151,7 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
     
     CGSize targetSize = CGSizeEqualToSize(DFImageMaximumSize, request.targetSize) ? PHImageManagerMaximumSize : request.targetSize;
     
-    _DFPhotosKitImageFetchOperation *operation = [[_DFPhotosKitImageFetchOperation alloc] initWithResource:resource targetSize:targetSize contentMode:_PHContentModeForDFContentMode(request.contentMode) options:requestOptions];
+    _DFPhotosKitImageFetchOperation *operation = [[_DFPhotosKitImageFetchOperation alloc] initWithResource:resource targetSize:targetSize contentMode:_PHContentModeForDFContentMode(request.contentMode) options:requestOptions allowGIF:options.allowGIF];
     _DFPhotosKitImageFetchOperation *__weak weakOp = operation;
     operation.completionBlock = ^{
         if (completion) {
@@ -163,6 +167,10 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
     NSNumber *version = info[DFPhotosKitVersionKey];
     options.version = version ? version.integerValue : PHImageRequestOptionsVersionCurrent;
     NSNumber *deliveryMode = info[DFPhotosKitDeliveryModeKey];
+    if (deliveryMode.integerValue == DFPhotosKitDeliveryModeHighQualityOrGIF){
+        options.allowGIF = YES;
+        deliveryMode = @(PHImageRequestOptionsDeliveryModeHighQualityFormat);
+    }
     options.deliveryMode = deliveryMode ? deliveryMode.integerValue : PHImageRequestOptionsDeliveryModeHighQualityFormat;
     NSNumber *resizeMode = info[DFPhotosKitResizeModeKey];
     options.resizeMode = resizeMode ? resizeMode.integerValue : PHImageRequestOptionsResizeModeFast;
@@ -184,6 +192,7 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
     NSString *_localIdentifier;
     CGSize _targetSize;
     PHImageContentMode _contentMode;
+    BOOL _allowGIF;
     PHImageRequestOptions *_options;
     PHImageRequestID _requestID;
 }
@@ -191,7 +200,7 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
 @synthesize executing = _executing;
 @synthesize finished = _finished;
 
-- (instancetype)initWithResource:(id)resource targetSize:(CGSize)targetSize contentMode:(PHImageContentMode)contentMode options:(PHImageRequestOptions *)options {
+- (instancetype)initWithResource:(id)resource targetSize:(CGSize)targetSize contentMode:(PHImageContentMode)contentMode options:(PHImageRequestOptions *)options allowGIF:(BOOL)allowGIF {
     if (self = [super init]) {
         if ([resource isKindOfClass:[PHAsset class]]) {
             _asset = (PHAsset *)resource;
@@ -202,6 +211,7 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
         _contentMode = contentMode;
         _options = options;
         _requestID = PHInvalidImageRequestID;
+        _allowGIF = allowGIF;
     }
     return self;
 }
@@ -232,10 +242,19 @@ static inline PHImageContentMode _PHContentModeForDFContentMode(DFImageContentMo
     }
     if (!self.isCancelled) {
         _DFPhotosKitImageFetchOperation *__weak weakSelf = self;
-        _requestID = [[PHImageManager defaultManager] requestImageForAsset:_asset targetSize:_targetSize contentMode:_contentMode options:_options resultHandler:^(UIImage *result, NSDictionary *info) {
-            result = result ? [UIImage imageWithCGImage:result.CGImage scale:[UIScreen mainScreen].scale orientation:result.imageOrientation] : nil;
-            [weakSelf _didFetchImage:result info:info];
-        }];
+
+        BOOL isGIF = [[_asset valueForKey:@"uniformTypeIdentifier"] isEqualToString:(NSString *)kUTTypeGIF];
+        if (isGIF && _allowGIF) {
+            _requestID = [[PHImageManager defaultManager] requestImageDataForAsset:_asset options:_options resultHandler:^(NSData *imageData, NSString *dataUTI, UIImageOrientation orientation, NSDictionary *info) {
+                UIImage *result = [UIImage df_decodedImageWithData:imageData];
+                [weakSelf _didFetchImage:result info:info];
+            }];
+        } else {
+            _requestID = [[PHImageManager defaultManager] requestImageForAsset:_asset targetSize:_targetSize contentMode:_contentMode options:_options resultHandler:^(UIImage *result, NSDictionary *info) {
+                result = result ? [UIImage imageWithCGImage:result.CGImage scale:[UIScreen mainScreen].scale orientation:result.imageOrientation] : nil;
+                [weakSelf _didFetchImage:result info:info];
+            }];
+        }
     } else {
         [self finish];
     }
